@@ -57,7 +57,7 @@ const (
 	// The number is referenced from the size of tx pool.
 	txChanSize = 4096
 
-	// minimim number of peers to broadcast new blocks to
+	// minimum number of peers to broadcast new blocks to
 	minBroadcastPeers = 4
 )
 
@@ -112,7 +112,9 @@ type ProtocolManager struct {
 
 // NewProtocolManager returns a new Ethereum sub protocol manager. The Ethereum sub protocol manages peers capable
 // with the Ethereum network.
-func NewProtocolManager(config *params.ChainConfig, checkpoint *params.TrustedCheckpoint, mode downloader.SyncMode, networkID uint64, mux *event.TypeMux, txpool txPool, engine consensus.Engine, blockchain *core.BlockChain, chaindb ethdb.Database, cacheLimit int, whitelist map[uint64]common.Hash) (*ProtocolManager, error) {
+func NewProtocolManager(config *params.ChainConfig, checkpoint *params.TrustedCheckpoint, mode downloader.SyncMode,
+	networkID uint64, mux *event.TypeMux, txpool txPool, engine consensus.Engine, blockchain *core.BlockChain,
+	chaindb ethdb.Database, cacheLimit int, whitelist map[uint64]common.Hash) (*ProtocolManager, error) {
 	// Create the protocol manager with the base fields
 	manager := &ProtocolManager{
 		networkID:   networkID,
@@ -484,7 +486,7 @@ func (pm *ProtocolManager) handleMsg(p *peer) error {
 					unknown = true
 				} else {
 					query.Origin.Hash, query.Origin.Number = pm.blockchain.GetAncestor(query.Origin.Hash, query.Origin.Number, ancestor, &maxNonCanonical)
-					unknown = (query.Origin.Hash == common.Hash{})
+					unknown = query.Origin.Hash == common.Hash{}
 				}
 			case hashMode && !query.Reverse:
 				// Hash based traversal towards the leaf block
@@ -494,7 +496,8 @@ func (pm *ProtocolManager) handleMsg(p *peer) error {
 				)
 				if next <= current {
 					infos, _ := json.MarshalIndent(p.Peer.Info(), "", "  ")
-					p.Log().Warn("GetBlockHeaders skip overflow attack", "current", current, "skip", query.Skip, "next", next, "attacker", infos)
+					p.Log().Warn("GetBlockHeaders skip overflow attack", "current", current,
+						"skip", query.Skip, "next", next, "attacker", infos)
 					unknown = true
 				} else {
 					if header := pm.blockchain.GetHeaderByNumber(next); header != nil {
@@ -562,7 +565,8 @@ func (pm *ProtocolManager) handleMsg(p *peer) error {
 			// Otherwise if it's a whitelisted block, validate against the set
 			if want, ok := pm.whitelist[headers[0].Number.Uint64()]; ok {
 				if hash := headers[0].Hash(); want != hash {
-					p.Log().Info("Whitelist mismatch, dropping peer", "number", headers[0].Number.Uint64(), "hash", hash, "want", want)
+					p.Log().Info("Whitelist mismatch, dropping peer", "number", headers[0].Number.Uint64(),
+						"hash", hash, "want", want)
 					return errors.New("whitelist block mismatch")
 				}
 				p.Log().Debug("Whitelist block verified", "number", headers[0].Number.Uint64(), "hash", want)
@@ -836,7 +840,8 @@ func (pm *ProtocolManager) BroadcastBlock(block *types.Block, propagate bool) {
 		for _, peer := range peers {
 			peer.AsyncSendNewBlockHash(block)
 		}
-		log.Trace("Announced block", "hash", hash, "recipients", len(peers), "duration", common.PrettyDuration(time.Since(block.ReceivedAt)))
+		log.Trace("Announced block", "hash", hash, "recipients", len(peers),
+			"duration", common.PrettyDuration(time.Since(block.ReceivedAt)))
 	}
 }
 
@@ -1001,10 +1006,6 @@ func (pm *ProtocolManager) NetworkId() uint64 {
 func (pm *ProtocolManager) GetNonce(address common.Address) uint64 {
 	return pm.txpool.GetCurrentNonce(address)
 }
-
-//func (pm *ProtocolManager) Pending() (map[common.Address]types.Transactions, error) {
-//	return pm.txpool.Pending()
-//}
 
 func (pm *ProtocolManager) GetAnchorTxs(address common.Address) (map[common.Address]types.Transactions, error) {
 	return pm.txpool.GetAnchorTxs(address)

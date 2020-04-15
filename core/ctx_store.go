@@ -239,8 +239,7 @@ func (store *CtxStore) addTx(ctx *types.CrossTransaction, local bool) error {
 }
 
 func (store *CtxStore) addTxs(cwss []*types.CrossTransactionWithSignatures) []error {
-	errs := make([]error, len(cwss))
-	for i, cws := range cwss {
+	for _, cws := range cwss {
 		if err := store.verifyCtx(cws); err != ErrRepetitionCrossTransaction {
 			if ok, err := store.db.Has(cws.Key()); !ok || err != nil {
 				if cws.Data.DestinationId.Cmp(store.config.ChainId) == 0 {
@@ -267,11 +266,11 @@ func (store *CtxStore) addTxs(cwss []*types.CrossTransactionWithSignatures) []er
 					log.Error("Failed to encode cws", "err", err)
 				}
 				store.db.Put(cws.Key(), data)
-				errs[i] = store.storeCtx(cws)
+				store.storeCtx(cws)
 			}
 		}
 	}
-	return errs
+	return nil
 }
 
 func (store *CtxStore) addLocalTxs(cwss []*types.CrossTransactionWithSignatures) {
@@ -312,9 +311,10 @@ func (store *CtxStore) addTxLocked(ctx *types.CrossTransaction, local bool) erro
 	}
 
 	checkAndCommit := func(id common.Hash) error {
-		if cws := store.pending.Get(id); cws != nil && len(cws.Data.V) >= requireSignatureCount {
-			//TODO signatures combine or multi-sign msg?
-			go store.resultFeed.Send(NewCWsEvent{cws})
+
+		cws := store.pending.Get(id)
+		if cws != nil && len(cws.Data.V) >= requireSignatureCount {
+			go store.resultFeed.Send(NewCWsEvent{cws}) // -> makerSignedCh
 
 			keyId := cws.Data.DestinationId.Uint64()
 			if _, yes := store.localStore[keyId]; yes {
@@ -336,6 +336,7 @@ func (store *CtxStore) addTxLocked(ctx *types.CrossTransaction, local bool) erro
 			store.db.Put(cws.Key(), data)
 		}
 		return nil
+
 	}
 
 	// if this pending ctx exist, add signature to pending directly
@@ -612,7 +613,6 @@ func (store *CtxStore) verifyCtx(ctx *types.CrossTransactionWithSignatures) erro
 		Scrypt:  new(params.ScryptConfig),
 	}
 
-	contractAddress = store.CrossDemoAddress
 	if store.config.ChainId.Cmp(ctx.ChainId()) == 0 {
 		data = append(data, getMakerTx...)
 		data = append(data, paddedCtxId...)
@@ -626,7 +626,8 @@ func (store *CtxStore) verifyCtx(ctx *types.CrossTransactionWithSignatures) erro
 	}
 
 	//构造消息
-	checkMsg := types.NewMessage(common.Address{}, &contractAddress, 0, big.NewInt(0), math.MaxUint64/2, big.NewInt(params.GWei), data, false)
+	checkMsg := types.NewMessage(common.Address{}, &contractAddress, 0, big.NewInt(0), math.MaxUint64/2,
+		big.NewInt(params.GWei), data, false)
 	var cancel context.CancelFunc
 	contx, cancel := context.WithTimeout(context.Background(), time.Second*30)
 

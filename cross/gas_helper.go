@@ -31,12 +31,12 @@ type CallArgs struct {
 }
 
 type GasHelper struct {
-	blockchain *core.BlockChain
+	blockChain *core.BlockChain
 	chain      simplechain
 }
 
-func NewGasHelper(blockchain *core.BlockChain, chain simplechain) *GasHelper {
-	return &GasHelper{blockchain: blockchain, chain: chain}
+func NewGasHelper(blockChain *core.BlockChain, chain simplechain) *GasHelper {
+	return &GasHelper{blockChain: blockChain, chain: chain}
 }
 
 // EstimateGas returns an estimate of the amount of gas needed to execute the

@@ -146,10 +146,10 @@ func (set *UnconfirmedBlockLogs) Shift(height uint64) {
 					}
 				}
 				if len(ctxs) > 0 {
-					set.chain.CtxsFeedSend(NewCTxsEvent{ctxs})
+					set.chain.CtxsFeedSend(NewCTxsEvent{ctxs}) // -> makerStartEventCh
 				}
 				if len(rtxs) > 0 {
-					set.chain.RtxsFeedSend(NewRTxsEvent{rtxs})
+					set.chain.RtxsFeedSend(NewRTxsEvent{rtxs}) // -> takerEventCh
 				}
 				if len(finishes) > 0 {
 					set.chain.TransactionFinishFeedSend(TransationFinishEvent{finishes})

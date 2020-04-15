@@ -29,6 +29,10 @@ const (
 	ErrInvalidMsgCode
 )
 
+func errResp(code errCode, format string, v ...interface{}) error {
+	return fmt.Errorf("%v - %v", code, fmt.Sprintf(format, v...))
+}
+
 type RoleHandler int
 
 const (
@@ -36,19 +40,10 @@ const (
 	RoleSubHandler
 )
 
-func errResp(code errCode, format string, v ...interface{}) error {
-	return fmt.Errorf("%v - %v", code, fmt.Sprintf(format, v...))
-}
-
 type TranParam struct {
 	gasLimit uint64
 	gasPrice *big.Int
 	data     []byte
-}
-
-type GetCtxSignsData struct {
-	Amount int  // Maximum number of headers to retrieve
-	GetAll bool // Query all
 }
 
 type MsgHandler struct {
@@ -56,7 +51,7 @@ type MsgHandler struct {
 	role                common.ChainRole
 	ctxStore            CtxStore
 	rtxStore            rtxStore
-	blockchain          *core.BlockChain
+	blockChain          *core.BlockChain
 	pm                  ProtocolManager
 	crossMsgReader      <-chan interface{}
 	crossMsgWriter      chan<- interface{}
@@ -90,20 +85,19 @@ type MsgHandler struct {
 	signHash            types.SignHash
 }
 
-func NewMsgHandler(chain simplechain, roleHandler RoleHandler, role common.ChainRole, ctxpool CtxStore, rtxStore rtxStore,
-	blockchain *core.BlockChain, crossMsgReader <-chan interface{},
-	crossMsgWriter chan<- interface{}, mainAddr common.Address, subAddr common.Address,
-	signHash types.SignHash, anchorSigner common.Address) *MsgHandler {
+func NewMsgHandler(chain simplechain, roleHandler RoleHandler, role common.ChainRole, ctxPool CtxStore, rtxStore rtxStore,
+	blockChain *core.BlockChain, crossMsgReader <-chan interface{}, crossMsgWriter chan<- interface{}, mainAddr common.Address,
+	subAddr common.Address, signHash types.SignHash, anchorSigner common.Address) *MsgHandler {
 
-	gasHelper := NewGasHelper(blockchain, chain)
+	gasHelper := NewGasHelper(blockChain, chain)
 	return &MsgHandler{
 		chain:               chain,
 		roleHandler:         roleHandler,
 		role:                role,
 		quitSync:            make(chan struct{}),
-		ctxStore:            ctxpool,
+		ctxStore:            ctxPool,
 		rtxStore:            rtxStore,
-		blockchain:          blockchain,
+		blockChain:          blockChain,
 		crossMsgReader:      crossMsgReader,
 		crossMsgWriter:      crossMsgWriter,
 		gasHelper:           gasHelper,
@@ -120,9 +114,9 @@ func (this *MsgHandler) SetProtocolManager(pm ProtocolManager) {
 
 func (this *MsgHandler) Start() {
 	this.makerStartEventCh = make(chan core.NewCTxsEvent, txChanSize)
-	this.makerStartEventSub = this.blockchain.SubscribeNewCTxsEvent(this.makerStartEventCh)
+	this.makerStartEventSub = this.blockChain.SubscribeNewCTxsEvent(this.makerStartEventCh)
 	this.takerEventCh = make(chan core.NewRTxsEvent, txChanSize)
-	this.takerEventSub = this.blockchain.SubscribeNewRTxsEvent(this.takerEventCh)
+	this.takerEventSub = this.blockChain.SubscribeNewRTxsEvent(this.takerEventCh)
 	this.makerSignedCh = make(chan core.NewCWsEvent, txChanSize)
 	this.makerSignedSub = this.ctxStore.SubscribeCWssResultEvent(this.makerSignedCh)
 	this.takerSignedCh = make(chan core.NewRWsEvent, txChanSize)
@@ -130,14 +124,13 @@ func (this *MsgHandler) Start() {
 	this.availableTakerCh = make(chan core.NewRWssEvent, txChanSize)
 	this.availableTakerSub = this.rtxStore.SubscribeNewRWssEvent(this.availableTakerCh)
 	this.makerFinishEventCh = make(chan core.TransationFinishEvent, txChanSize)
-	this.makerFinishEventSub = this.blockchain.SubscribeNewFinishsEvent(this.makerFinishEventCh)
+	this.makerFinishEventSub = this.blockChain.SubscribeNewFinishsEvent(this.makerFinishEventCh)
 
-	//标记已接单
 	this.takerStampCh = make(chan core.NewTakerStampEvent, txChanSize)
-	this.takerStampSub = this.blockchain.SubscribeNewStampEvent(this.takerStampCh)
+	this.takerStampSub = this.blockChain.SubscribeNewStampEvent(this.takerStampCh)
 
 	this.rmLogsCh = make(chan core.RemovedLogsEvent, rmLogsChanSize)
-	this.rmLogsSub = this.blockchain.SubscribeRemovedLogsEvent(this.rmLogsCh)
+	this.rmLogsSub = this.blockChain.SubscribeRemovedLogsEvent(this.rmLogsCh)
 
 	go this.loop()
 	go this.ReadCrossMessage()
@@ -147,10 +140,6 @@ func (this *MsgHandler) loop() {
 	for {
 		select {
 		case ev := <-this.makerStartEventCh:
-			//get cross transaction from the log
-			if !this.pm.CanAcceptTxs() {
-				break
-			}
 			if this.role.IsAnchor() {
 				for _, tx := range ev.Txs {
 					if err := this.ctxStore.AddLocal(tx); err != nil {
@@ -158,17 +147,12 @@ func (this *MsgHandler) loop() {
 					}
 				}
 				this.pm.BroadcastCtx(ev.Txs) //CtxSignMsg
-				//TODO addlocal 已经发了多签结束的交易(CtxSignsInternalMsg)
 			}
 		case <-this.makerStartEventSub.Err():
 			return
 
-		case ev := <-this.makerSignedCh:
-			log.Warn("makerSignedCh", "finish maker tx signs", ev.Txs.Hash())
-
-			if this.role.IsAnchor() {
-				this.WriteCrossMessage(ev.Txs)
-			}
+		case ev := <-this.makerSignedCh: //only anchor
+			this.WriteCrossMessage(ev.Txs) //another chain channel
 		case <-this.makerSignedSub.Err():
 			return
 
@@ -392,7 +376,8 @@ func (this *MsgHandler) GetTxForLockOut(rwss []*types.ReceptTransactionWithSigna
 		}
 	}
 
-	log.Info("GetTxForLockOut", "errorRws", len(errorRws), "exec", exec, "errtx1", errTx1, "errtx2", errTx2, "tx", len(txs), "sent", send, "role", this.role.String())
+	log.Info("GetTxForLockOut", "errorRws", len(errorRws), "exec", exec, "errtx1", errTx1, "errtx2", errTx2,
+		"tx", len(txs), "sent", send, "role", this.role.String())
 	return txs, nil
 }
 
@@ -405,10 +390,9 @@ func (this *MsgHandler) WriteCrossMessage(v interface{}) {
 }
 
 func (this *MsgHandler) clearStore(finishes []*types.FinishInfo) error {
-	log.Info("cross transaction finish", "clearStore count", len(finishes))
-	//for _, finish := range finishes {
-	//	log.Info("cross transaction finish", "txId", finish.TxId.String())
-	//}
+	for _, finish := range finishes {
+		log.Info("cross transaction finish", "txId", finish.TxId.String())
+	}
 	if err := this.ctxStore.RemoveLocals(finishes); err != nil {
 		return errors.New("rm ctx error")
 	}
@@ -473,7 +457,7 @@ func (this *MsgHandler) GetCtxstore() CtxStore {
 func (this *MsgHandler) reorgLogs(logs []*types.Log) {
 	var takerLogs []*types.RTxsInfo
 	for _, log := range logs {
-		if this.blockchain.IsCtxAddress(log.Address) {
+		if this.blockChain.IsCtxAddress(log.Address) {
 			if log.Topics[0] == params.TakerTopic && len(log.Topics) >= 3 && len(log.Data) >= common.HashLength*6 {
 				takerLogs = append(takerLogs, &types.RTxsInfo{
 					DestinationId: common.BytesToHash(log.Data[:common.HashLength]).Big(),

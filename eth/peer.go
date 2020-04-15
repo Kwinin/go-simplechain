@@ -731,7 +731,7 @@ func (ps *peerSet) PeersWithoutCWss(hash common.Hash) []*peer {
 }
 
 func (p *peer) SendCrossTransactionWithSignatures(txs []*types.CrossTransactionWithSignatures) error {
-	log.Debug("SendCrossTransactionWithSignatures", "len", len(txs), "peer", p.id)
+	log.Warn("SendCrossTransactionWithSignatures", "len", len(txs), "peer", p.id)
 	return p2p.Send(p.rw, CtxSignsMsg, txs)
 }
 
