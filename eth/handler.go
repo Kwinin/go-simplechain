@@ -35,7 +35,6 @@ import (
 	"github.com/simplechain-org/go-simplechain/core"
 	"github.com/simplechain-org/go-simplechain/core/forkid"
 	"github.com/simplechain-org/go-simplechain/core/types"
-	"github.com/simplechain-org/go-simplechain/cross"
 	"github.com/simplechain-org/go-simplechain/crypto"
 	"github.com/simplechain-org/go-simplechain/eth/downloader"
 	"github.com/simplechain-org/go-simplechain/eth/fetcher"
@@ -65,7 +64,7 @@ var (
 	syncChallengeTimeout = 15 * time.Second // Time allowance for a node to reply to the sync progress challenge
 )
 
-func errResp(code errCode, format string, v ...interface{}) error {
+func ErrResp(code errCode, format string, v ...interface{}) error {
 	return fmt.Errorf("%v - %v", code, fmt.Sprintf(format, v...))
 }
 
@@ -97,7 +96,6 @@ type ProtocolManager struct {
 	// channels for fetcher, syncer, txsyncLoop
 	newPeerCh   chan *peer
 	txsyncCh    chan *txsync
-	ctxsyncCh   chan *ctxsync
 	quitSync    chan struct{}
 	noMorePeers chan struct{}
 
@@ -105,9 +103,9 @@ type ProtocolManager struct {
 	// and processing
 	wg sync.WaitGroup
 
-	msgHandler *cross.MsgHandler
-	raftMode   bool
-	engine     consensus.Engine // used for istanbul consensus
+	//msgHandler *cross.Handler
+	raftMode bool
+	engine   consensus.Engine // used for istanbul consensus
 }
 
 // NewProtocolManager returns a new Ethereum sub protocol manager. The Ethereum sub protocol manages peers capable
@@ -125,7 +123,6 @@ func NewProtocolManager(config *params.ChainConfig, checkpoint *params.TrustedCh
 		newPeerCh:   make(chan *peer),
 		noMorePeers: make(chan struct{}),
 		txsyncCh:    make(chan *txsync),
-		ctxsyncCh:   make(chan *ctxsync),
 		quitSync:    make(chan struct{}),
 		raftMode:    config.Raft,
 		engine:      engine,
@@ -280,22 +277,14 @@ func (pm *ProtocolManager) Start(maxPeers int) {
 	}
 
 	// start sync handlers
-	go pm.ctxsyncLoop()
 	go pm.syncer()
 	go pm.txsyncLoop()
-
-	if pm.msgHandler != nil {
-		pm.msgHandler.Start()
-	}
 }
 
 func (pm *ProtocolManager) Stop() {
 
 	log.Info("Stopping Simplechain protocol")
 
-	if pm.msgHandler != nil {
-		pm.msgHandler.Stop()
-	}
 	pm.txsSub.Unsubscribe() // quits txBroadcastLoop
 	if !pm.raftMode {
 		pm.minedBlockSub.Unsubscribe() // quits blockBroadcastLoop
@@ -360,7 +349,6 @@ func (pm *ProtocolManager) handle(p *peer) error {
 	// Propagate existing transactions. new transactions appearing
 	// after this will be sent via broadcasts.
 	pm.syncTransactions(p)
-	pm.syncCtxs(p)
 
 	// If we have a trusted CHT, reject all peers below that (avoid fast sync eclipse)
 	if pm.checkpointHash != (common.Hash{}) {
@@ -406,7 +394,7 @@ func (pm *ProtocolManager) handleMsg(p *peer) error {
 		return err
 	}
 	if msg.Size > protocolMaxMsgSize {
-		return errResp(ErrMsgTooLarge, "%v > %v", msg.Size, protocolMaxMsgSize)
+		return ErrResp(ErrMsgTooLarge, "%v > %v", msg.Size, protocolMaxMsgSize)
 	}
 	defer msg.Discard()
 
@@ -434,14 +422,14 @@ func (pm *ProtocolManager) handleMsg(p *peer) error {
 	switch {
 	case msg.Code == StatusMsg:
 		// Status messages should never arrive after the handshake
-		return errResp(ErrExtraStatusMsg, "uncontrolled status message")
+		return ErrResp(ErrExtraStatusMsg, "uncontrolled status message")
 
 	// Block header query, collect the requested headers and reply
 	case msg.Code == GetBlockHeadersMsg:
 		// Decode the complex header query
 		var query getBlockHeadersData
 		if err := msg.Decode(&query); err != nil {
-			return errResp(ErrDecode, "%v: %v", msg, err)
+			return ErrResp(ErrDecode, "%v: %v", msg, err)
 		}
 		hashMode := query.Origin.Hash != (common.Hash{})
 		first := true
@@ -528,7 +516,7 @@ func (pm *ProtocolManager) handleMsg(p *peer) error {
 		// A batch of headers arrived to one of our previous requests
 		var headers []*types.Header
 		if err := msg.Decode(&headers); err != nil {
-			return errResp(ErrDecode, "msg %v: %v", msg, err)
+			return ErrResp(ErrDecode, "msg %v: %v", msg, err)
 		}
 		// If no headers were received, but we're expencting a checkpoint header, consider it that
 		if len(headers) == 0 && p.syncDrop != nil {
@@ -594,7 +582,7 @@ func (pm *ProtocolManager) handleMsg(p *peer) error {
 			if err := msgStream.Decode(&hash); err == rlp.EOL {
 				break
 			} else if err != nil {
-				return errResp(ErrDecode, "msg %v: %v", msg, err)
+				return ErrResp(ErrDecode, "msg %v: %v", msg, err)
 			}
 			// Retrieve the requested block body, stopping if enough was found
 			if data := pm.blockchain.GetBodyRLP(hash); len(data) != 0 {
@@ -608,7 +596,7 @@ func (pm *ProtocolManager) handleMsg(p *peer) error {
 		// A batch of block bodies arrived to one of our previous requests
 		var request blockBodiesData
 		if err := msg.Decode(&request); err != nil {
-			return errResp(ErrDecode, "msg %v: %v", msg, err)
+			return ErrResp(ErrDecode, "msg %v: %v", msg, err)
 		}
 		// Deliver them all to the downloader for queuing
 		transactions := make([][]*types.Transaction, len(request))
@@ -647,7 +635,7 @@ func (pm *ProtocolManager) handleMsg(p *peer) error {
 			if err := msgStream.Decode(&hash); err == rlp.EOL {
 				break
 			} else if err != nil {
-				return errResp(ErrDecode, "msg %v: %v", msg, err)
+				return ErrResp(ErrDecode, "msg %v: %v", msg, err)
 			}
 			// Retrieve the requested state entry, stopping if enough was found
 			if entry, err := pm.blockchain.TrieNode(hash); err == nil {
@@ -661,7 +649,7 @@ func (pm *ProtocolManager) handleMsg(p *peer) error {
 		// A batch of node state data arrived to one of our previous requests
 		var data [][]byte
 		if err := msg.Decode(&data); err != nil {
-			return errResp(ErrDecode, "msg %v: %v", msg, err)
+			return ErrResp(ErrDecode, "msg %v: %v", msg, err)
 		}
 		// Deliver all to the downloader
 		if err := pm.downloader.DeliverNodeData(p.id, data); err != nil {
@@ -685,7 +673,7 @@ func (pm *ProtocolManager) handleMsg(p *peer) error {
 			if err := msgStream.Decode(&hash); err == rlp.EOL {
 				break
 			} else if err != nil {
-				return errResp(ErrDecode, "msg %v: %v", msg, err)
+				return ErrResp(ErrDecode, "msg %v: %v", msg, err)
 			}
 			// Retrieve the requested block's receipts, skipping if unknown to us
 			results := pm.blockchain.GetReceiptsByHash(hash)
@@ -708,7 +696,7 @@ func (pm *ProtocolManager) handleMsg(p *peer) error {
 		// A batch of receipts arrived to one of our previous requests
 		var receipts [][]*types.Receipt
 		if err := msg.Decode(&receipts); err != nil {
-			return errResp(ErrDecode, "msg %v: %v", msg, err)
+			return ErrResp(ErrDecode, "msg %v: %v", msg, err)
 		}
 		// Deliver all to the downloader
 		if err := pm.downloader.DeliverReceipts(p.id, receipts); err != nil {
@@ -718,7 +706,7 @@ func (pm *ProtocolManager) handleMsg(p *peer) error {
 	case msg.Code == NewBlockHashesMsg:
 		var announces newBlockHashesData
 		if err := msg.Decode(&announces); err != nil {
-			return errResp(ErrDecode, "%v: %v", msg, err)
+			return ErrResp(ErrDecode, "%v: %v", msg, err)
 		}
 		// Mark the hashes as present at the remote node
 		for _, block := range announces {
@@ -739,7 +727,7 @@ func (pm *ProtocolManager) handleMsg(p *peer) error {
 		// Retrieve and decode the propagated block
 		var request newBlockData
 		if err := msg.Decode(&request); err != nil {
-			return errResp(ErrDecode, "%v: %v", msg, err)
+			return ErrResp(ErrDecode, "%v: %v", msg, err)
 		}
 		if err := request.sanityCheck(); err != nil {
 			return err
@@ -778,12 +766,12 @@ func (pm *ProtocolManager) handleMsg(p *peer) error {
 		// Transactions can be processed, parse all of them and deliver to the pool
 		var txs []*types.Transaction
 		if err := msg.Decode(&txs); err != nil {
-			return errResp(ErrDecode, "msg %v: %v", msg, err)
+			return ErrResp(ErrDecode, "msg %v: %v", msg, err)
 		}
 		for i, tx := range txs {
 			// Validate and mark the remote transaction
 			if tx == nil {
-				return errResp(ErrDecode, "transaction %d is nil", i)
+				return ErrResp(ErrDecode, "transaction %d is nil", i)
 			}
 			p.MarkTransaction(tx.Hash())
 
@@ -791,11 +779,8 @@ func (pm *ProtocolManager) handleMsg(p *peer) error {
 		pm.AddRemotes(txs)
 
 	default:
-		if pm.msgHandler != nil {
-			return pm.msgHandler.HandleMsg(msg, p)
-		} else {
-			return errResp(ErrInvalidMsgCode, "%v", msg.Code)
-		}
+		return ErrResp(ErrInvalidMsgCode, "%v", msg.Code)
+
 	}
 	return nil
 }
@@ -930,82 +915,10 @@ func (pm *ProtocolManager) getConsensusAlgorithm() string {
 	return consensusAlgo
 }
 
-//广播多签完成的Ctx
-func (pm *ProtocolManager) BroadcastCWss(cwss []*types.CrossTransactionWithSignatures) {
-	var txset = make(map[*peer][]*types.CrossTransactionWithSignatures)
-
-	// Broadcast transactions to a batch of peers not knowing about it
-	for _, cws := range cwss {
-		peers := pm.peers.PeersWithoutCWss(cws.ID())
-		for _, peer := range peers {
-			txset[peer] = append(txset[peer], cws)
-		}
-		log.Trace("Broadcast transaction", "hash", cws.ID(), "recipients", len(peers))
-	}
-	// FIXME include this again: peers = peers[:int(math.Sqrt(float64(len(peers))))]
-	for peer, css := range txset {
-		peer.AsyncSendCrossTransactionWithSignatures(css)
-		log.Debug("BroadcastCWss", "peer", peer.id, "len", len(cwss))
-	}
-}
-
-//锚定节点广播签名Ctx
-func (pm *ProtocolManager) BroadcastCtx(ctxs []*types.CrossTransaction) {
-	for _, ctx := range ctxs {
-		var txset = make(map[*peer]*types.CrossTransaction)
-		// Broadcast ctx to a batch of peers not knowing about it
-		peers := pm.peers.PeersWithoutCTx(ctx.SignHash())
-		for _, peer := range peers {
-			txset[peer] = ctx
-		}
-		for peer, rt := range txset {
-			peer.AsyncSendCrossTransaction(rt)
-			log.Debug("Broadcast CrossTransaction", "hash", ctx.SignHash(), "peer", peer.id)
-		}
-	}
-}
-
-//锚定节点广播签名Rtx
-func (pm *ProtocolManager) BroadcastRtx(rtxs []*types.ReceptTransaction) {
-	for _, rtx := range rtxs {
-		var txset = make(map[*peer]*types.ReceptTransaction)
-		// Broadcast rtx to a batch of peers not knowing about it
-		peers := pm.peers.PeersWithoutRTx(rtx.SignHash())
-		for _, peer := range peers {
-			txset[peer] = rtx
-		}
-		log.Trace("Broadcast transaction", "hash", rtx.Hash(), "recipients", len(peers))
-		for peer, rt := range txset {
-			peer.AsyncSendReceptTransaction(rt)
-		}
-	}
-}
-
-//inside the chain
-func (pm *ProtocolManager) BroadcastInternalCrossTransactionWithSignature(cwss []*types.CrossTransactionWithSignatures) {
-	var txset = make(map[*peer][]*types.CrossTransactionWithSignatures)
-
-	// Broadcast CrossTransaction to a batch of peers not knowing about it
-	for _, cws := range cwss {
-		peers := pm.peers.PeersWithoutInternalCrossTransactionWithSignatures(cws.ID())
-		for _, peer := range peers {
-			txset[peer] = append(txset[peer], cws)
-		}
-		log.Trace("Broadcast CrossTransaction", "hash", cws.ID(), "recipients", len(peers))
-	}
-	for peer, css := range txset {
-		peer.AsyncSendInternalCrossTransactionWithSignatures(css)
-		log.Trace("Broadcast internal CrossTransactionWithSignature", "peer", peer.id, "len", len(cwss))
-	}
-}
-func (pm *ProtocolManager) SetMsgHandler(msgHandler *cross.MsgHandler) {
-	pm.msgHandler = msgHandler
-}
-func (pm *ProtocolManager) AddRemotes(txs []*types.Transaction) {
+func (pm *ProtocolManager) AddLocals(txs []*types.Transaction) {
 	for _, v := range txs {
-		pm.txpool.AddRemote(v)
+		pm.txpool.AddLocal(v)
 	}
-	//return pm.txpool.AddRemotes(txs)
 }
 
 func (pm *ProtocolManager) CanAcceptTxs() bool {
@@ -1016,13 +929,15 @@ func (pm *ProtocolManager) NetworkId() uint64 {
 }
 
 func (pm *ProtocolManager) GetNonce(address common.Address) uint64 {
-	return pm.txpool.GetCurrentNonce(address)
+	return pm.txpool.Nonce(address)
 }
 
-//func (pm *ProtocolManager) Pending() (map[common.Address]types.Transactions, error) {
-//	return pm.txpool.Pending()
-//}
+func (pm *ProtocolManager) Pending() (map[common.Address]types.Transactions, error) {
+	return pm.txpool.Pending()
+}
 
-func (pm *ProtocolManager) GetAnchorTxs(address common.Address) (map[common.Address]types.Transactions, error) {
-	return pm.txpool.GetAnchorTxs(address)
+func (pm *ProtocolManager) AddRemotes(txs []*types.Transaction) {
+	for _, v := range txs {
+		pm.txpool.AddRemote(v)
+	}
 }

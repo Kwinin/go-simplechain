@@ -2,48 +2,52 @@ package cross
 
 import (
 	"context"
+	"math/big"
 
 	"github.com/simplechain-org/go-simplechain/common"
 	"github.com/simplechain-org/go-simplechain/core"
 	"github.com/simplechain-org/go-simplechain/core/state"
 	"github.com/simplechain-org/go-simplechain/core/types"
 	"github.com/simplechain-org/go-simplechain/core/vm"
-	"github.com/simplechain-org/go-simplechain/event"
+	"github.com/simplechain-org/go-simplechain/eth/gasprice"
+	"github.com/simplechain-org/go-simplechain/params"
 	"github.com/simplechain-org/go-simplechain/rpc"
 )
 
-type CtxStore interface {
-	// AddRemotes should add the given transactions to the pool.
-	AddRemote(*types.CrossTransaction) error
-	// AddRemotes should add the given transactions to the pool.
-	AddLocal(*types.CrossTransaction) error
-	AddCWss([]*types.CrossTransactionWithSignatures) []error
-	ValidateCtx(*types.CrossTransaction) error
-	RemoveRemotes([]*types.ReceptTransaction) error
-	StampStatus([]*types.RTxsInfo, uint64) error
-	RemoveLocals([]*types.FinishInfo) error
-	RemoveFromLocalsByTransaction(common.Hash) error
-	SubscribeCWssResultEvent(chan<- core.NewCWsEvent) event.Subscription
-	ReadFromLocals(common.Hash) *types.CrossTransactionWithSignatures
-	List(int, bool) []*types.CrossTransactionWithSignatures
-	VerifyLocalCwsSigner(cws *types.CrossTransactionWithSignatures) error
-	VerifyRemoteCwsSigner(cws *types.CrossTransactionWithSignatures) error
-}
-
-type rtxStore interface {
-	AddRemote(*types.ReceptTransaction) error
-	AddLocal(*types.ReceptTransaction) error
-	ValidateRtx(rtx *types.ReceptTransaction) error
-	SubscribeRWssResultEvent(chan<- core.NewRWsEvent) event.Subscription
-	SubscribeNewRWssEvent(chan<- core.NewRWssEvent) event.Subscription
-	AddLocals(...*types.ReceptTransactionWithSignatures) []error
-	RemoveLocals(finishes []*types.FinishInfo) error
-	ReadFromLocals(ctxId common.Hash) *types.ReceptTransactionWithSignatures
-}
-
-type simplechain interface {
+type SimpleChain interface {
+	BlockChain() *core.BlockChain
+	ChainConfig() *params.ChainConfig
+	SignHash(hash []byte) ([]byte, error)
+	GasOracle() *gasprice.Oracle
+	ProtocolManager() ProtocolManager
+	RegisterAPIs([]rpc.API)
 	GetEVM(ctx context.Context, msg core.Message, state *state.StateDB, header *types.Header, vmCfg vm.Config) (*vm.EVM, func() error, error)
 	BlockByNumber(ctx context.Context, blockNr rpc.BlockNumber) (*types.Block, error)
 	HeaderByNumber(ctx context.Context, blockNr rpc.BlockNumber) (*types.Header, error)
 	StateAndHeaderByNumber(ctx context.Context, blockNr rpc.BlockNumber) (*state.StateDB, *types.Header, error)
+}
+
+type Transaction interface {
+	BlockHash() common.Hash
+}
+
+type BlockChain interface {
+	core.ChainContext
+	GetBlockNumber(hash common.Hash) *uint64
+	GetHeaderByHash(hash common.Hash) *types.Header
+	GetBlockByHash(hash common.Hash) *types.Block
+	CurrentBlock() *types.Block
+	StateAt(root common.Hash) (*state.StateDB, error)
+}
+
+type ProtocolManager interface {
+	NetworkId() uint64
+	GetNonce(address common.Address) uint64
+	AddLocals([]*types.Transaction)
+	Pending() (map[common.Address]types.Transactions, error)
+	CanAcceptTxs() bool
+}
+
+type GasPriceOracle interface {
+	SuggestPrice(ctx context.Context) (*big.Int, error)
 }

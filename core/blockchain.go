@@ -37,6 +37,7 @@ import (
 	"github.com/simplechain-org/go-simplechain/core/state"
 	"github.com/simplechain-org/go-simplechain/core/types"
 	"github.com/simplechain-org/go-simplechain/core/vm"
+	cc "github.com/simplechain-org/go-simplechain/cross/core"
 	"github.com/simplechain-org/go-simplechain/ethdb"
 	"github.com/simplechain-org/go-simplechain/event"
 	"github.com/simplechain-org/go-simplechain/log"
@@ -56,10 +57,10 @@ var (
 	accountUpdateTimer = metrics.NewRegisteredTimer("chain/account/updates", nil)
 	accountCommitTimer = metrics.NewRegisteredTimer("chain/account/commits", nil)
 
-	storageReadTimer   = metrics.NewRegisteredTimer("chain/storage/reads", nil)
-	storageHashTimer   = metrics.NewRegisteredTimer("chain/storage/hashes", nil)
-	storageUpdateTimer = metrics.NewRegisteredTimer("chain/storage/updates", nil)
-	storageCommitTimer = metrics.NewRegisteredTimer("chain/storage/commits", nil)
+	storageReadTimer   = metrics.NewRegisteredTimer("chain/db/reads", nil)
+	storageHashTimer   = metrics.NewRegisteredTimer("chain/db/hashes", nil)
+	storageUpdateTimer = metrics.NewRegisteredTimer("chain/db/updates", nil)
+	storageCommitTimer = metrics.NewRegisteredTimer("chain/db/commits", nil)
 
 	blockInsertTimer     = metrics.NewRegisteredTimer("chain/inserts", nil)
 	blockValidationTimer = metrics.NewRegisteredTimer("chain/validation", nil)
@@ -139,21 +140,15 @@ type BlockChain struct {
 	triegc *prque.Prque   // Priority queue mapping block numbers to tries to gc
 	gcproc time.Duration  // Accumulates canonical block processing for trie dumping
 
-	hc             *HeaderChain
-	rmLogsFeed     event.Feed
-	chainFeed      event.Feed
-	chainSideFeed  event.Feed
-	chainHeadFeed  event.Feed
-	logsFeed       event.Feed
-	blockProcFeed  event.Feed
-	ctxFeed        event.Feed
-	cwsFeed        event.Feed
-	rtxFeed        event.Feed
-	rtxsFeed       event.Feed
-	takerStampFeed event.Feed
-	FinishsFeed    event.Feed
-	scope          event.SubscriptionScope
-	genesisBlock   *types.Block
+	hc            *HeaderChain
+	rmLogsFeed    event.Feed
+	chainFeed     event.Feed
+	chainSideFeed event.Feed
+	chainHeadFeed event.Feed
+	logsFeed      event.Feed
+	blockProcFeed event.Feed
+	scope         event.SubscriptionScope
+	genesisBlock  *types.Block
 
 	chainmu sync.RWMutex // blockchain insertion lock
 
@@ -180,11 +175,10 @@ type BlockChain struct {
 	processor  Processor  // Block transaction processor interface
 	vmConfig   vm.Config
 
-	badBlocks        *lru.Cache                     // Bad block cache
-	shouldPreserve   func(*types.Block) bool        // Function used to determine whether should preserve the given block.
-	terminateInsert  func(common.Hash, uint64) bool // Testing hook used to terminate ancient receipt chain insertion.
-	trigger          *UnconfirmedBlockLogs
-	CrossDemoAddress common.Address
+	badBlocks       *lru.Cache                     // Bad block cache
+	shouldPreserve  func(*types.Block) bool        // Function used to determine whether should preserve the given block.
+	terminateInsert func(common.Hash, uint64) bool // Testing hook used to terminate ancient receipt chain insertion.
+	crossTrigger    *cc.CrossTrigger
 }
 
 // NewBlockChain returns a fully initialised block chain using information
@@ -207,23 +201,22 @@ func NewBlockChain(db ethdb.Database, cacheConfig *CacheConfig, chainConfig *par
 	badBlocks, _ := lru.New(badBlockLimit)
 
 	bc := &BlockChain{
-		chainConfig:      chainConfig,
-		cacheConfig:      cacheConfig,
-		db:               db,
-		triegc:           prque.New(nil),
-		stateCache:       state.NewDatabaseWithCache(db, cacheConfig.TrieCleanLimit),
-		quit:             make(chan struct{}),
-		shouldPreserve:   shouldPreserve,
-		bodyCache:        bodyCache,
-		bodyRLPCache:     bodyRLPCache,
-		receiptsCache:    receiptsCache,
-		blockCache:       blockCache,
-		txLookupCache:    txLookupCache,
-		futureBlocks:     futureBlocks,
-		engine:           engine,
-		vmConfig:         vmConfig,
-		badBlocks:        badBlocks,
-		CrossDemoAddress: contract,
+		chainConfig:    chainConfig,
+		cacheConfig:    cacheConfig,
+		db:             db,
+		triegc:         prque.New(nil),
+		stateCache:     state.NewDatabaseWithCache(db, cacheConfig.TrieCleanLimit),
+		quit:           make(chan struct{}),
+		shouldPreserve: shouldPreserve,
+		bodyCache:      bodyCache,
+		bodyRLPCache:   bodyRLPCache,
+		receiptsCache:  receiptsCache,
+		blockCache:     blockCache,
+		txLookupCache:  txLookupCache,
+		futureBlocks:   futureBlocks,
+		engine:         engine,
+		vmConfig:       vmConfig,
+		badBlocks:      badBlocks,
 	}
 	bc.validator = NewBlockValidator(chainConfig, bc, engine)
 	bc.prefetcher = newStatePrefetcher(chainConfig, bc, engine)
@@ -305,7 +298,10 @@ func NewBlockChain(db ethdb.Database, cacheConfig *CacheConfig, chainConfig *par
 	// Take ownership of this particular state
 	go bc.update()
 
-	bc.trigger = NewUnconfirmedBlockLogs(bc, 12) //todo 日志确认高度设置成参数配置
+	if contract != (common.Address{}) {
+		bc.crossTrigger = cc.NewCrossTrigger(contract, bc)
+	}
+
 	return bc, nil
 }
 
@@ -818,7 +814,7 @@ func (bc *BlockChain) GetUnclesInChain(block *types.Block, length int) []*types.
 }
 
 // TrieNode retrieves a blob of data associated with a trie node (or code hash)
-// either from ephemeral in-memory cache, or from persistent storage.
+// either from ephemeral in-memory cache, or from persistent db.
 func (bc *BlockChain) TrieNode(hash common.Hash) ([]byte, error) {
 	return bc.stateCache.TrieDB().Node(hash)
 }
@@ -835,6 +831,10 @@ func (bc *BlockChain) Stop() {
 	atomic.StoreInt32(&bc.procInterrupt, 1)
 
 	bc.wg.Wait()
+
+	if bc.crossTrigger != nil {
+		bc.crossTrigger.Stop()
+	}
 
 	// Ensure the state of a recent block is also stored to disk before exiting.
 	// We're writing three different states to catch different restart scenarios:
@@ -1416,7 +1416,10 @@ func (bc *BlockChain) writeBlockWithState(block *types.Block, receipts []*types.
 		if len(logs) > 0 {
 			bc.logsFeed.Send(logs)
 		}
-		bc.StoreContractLog(block.NumberU64(), block.Hash(), logs)
+
+		if bc.chainConfig.IsSingularity(currentBlock.Number()) && bc.crossTrigger != nil {
+			bc.crossTrigger.StoreCrossContractLog(block.NumberU64(), block.Hash(), logs)
+		}
 
 		// In theory we should fire a ChainHeadEvent when we inject
 		// a canonical block, but sometimes we can insert a batch of
@@ -1645,7 +1648,7 @@ func (bc *BlockChain) insertChain(chain types.Blocks, verifySeals bool) (int, er
 			return it.index, err
 		}
 		// If we have a followup block, run that against the current state to pre-cache
-		// transactions and probabilistically some of the account/storage trie nodes.
+		// transactions and probabilistically some of the account/db trie nodes.
 		var followupInterrupt uint32
 
 		if !bc.cacheConfig.TrieCleanNoPrefetch {
@@ -1663,7 +1666,7 @@ func (bc *BlockChain) insertChain(chain types.Blocks, verifySeals bool) (int, er
 		}
 		// Process block using the parent state as reference point
 		substart := time.Now()
-		receipts, logs, usedGas, err := bc.processor.Process(block, statedb, bc.vmConfig, bc.CrossDemoAddress)
+		receipts, logs, usedGas, err := bc.processor.Process(block, statedb, bc.vmConfig)
 		if err != nil {
 			bc.reportBlock(block, receipts, err)
 			atomic.StoreUint32(&followupInterrupt, 1)
@@ -1742,6 +1745,10 @@ func (bc *BlockChain) insertChain(chain types.Blocks, verifySeals bool) (int, er
 		stats.usedGas += usedGas
 
 		dirty, _ := bc.stateCache.TrieDB().Size()
+		if bc.crossTrigger != nil { // report chain info for anchor node
+			stats.report(chain, it.index, dirty, "chainID", bc.chainConfig.ChainID)
+			continue
+		}
 		stats.report(chain, it.index, dirty)
 	}
 	// Any blocks remaining here? The only ones we care about are the future ones
@@ -2248,40 +2255,6 @@ func (bc *BlockChain) SubscribeBlockProcessingEvent(ch chan<- bool) event.Subscr
 	return bc.scope.Track(bc.blockProcFeed.Subscribe(ch))
 }
 
-func (bc *BlockChain) StoreContractLog(blockNumber uint64, hash common.Hash, logs []*types.Log) {
-	var blockLogs []*types.Log
-	if logs != nil {
-		var rtxs []*types.RTxsInfo
-		for _, v := range logs {
-			if len(v.Topics) > 0 && bc.IsCtxAddress(v.Address) {
-
-				if v.Topics[0] == params.MakerTopic || v.Topics[0] == params.MakerFinishTopic ||
-					v.Topics[0] == params.AddAnchorsTopic || v.Topics[0] == params.RemoveAnchorsTopic {
-					blockLogs = append(blockLogs, v)
-					continue
-				}
-
-				if v.Topics[0] == params.TakerTopic && len(v.Topics) >= 3 && len(v.Data) >= common.HashLength*6 {
-					rtxs = append(rtxs, &types.RTxsInfo{
-						DestinationId: common.BytesToHash(v.Data[:common.HashLength]).Big(),
-						CtxId:         v.Topics[1],
-					})
-					blockLogs = append(blockLogs, v)
-				}
-			}
-		}
-		if len(rtxs) > 0 {
-			go bc.takerStampFeed.Send(NewTakerStampEvent{rtxs})
-		}
-	}
-	if len(blockLogs) > 0 {
-		bc.trigger.Insert(blockNumber, hash, blockLogs)
-	} else {
-		bc.trigger.Insert(blockNumber, hash, nil)
-	}
-
-}
-
 // GetReceiptsByHash retrieves the receipts for all transactions in a given block.
 func (bc *BlockChain) GetReceiptsByTxHash(hash common.Hash) *types.Receipt {
 	rep, _, _, _ := rawdb.ReadReceipt(bc.db, hash, bc.chainConfig)
@@ -2299,42 +2272,12 @@ func (bc *BlockChain) GetTransactionByTxHash(hash common.Hash) (*types.Transacti
 	return tx, blockHash, blockNumber
 }
 
-func (bc *BlockChain) SubscribeNewCTxsEvent(ch chan<- NewCTxsEvent) event.Subscription {
-	return bc.scope.Track(bc.ctxFeed.Subscribe(ch))
-}
-
-func (bc *BlockChain) CtxsFeedSend(ctx NewCTxsEvent) int {
-	return bc.ctxFeed.Send(ctx)
-}
-
-func (bc *BlockChain) SubscribeNewRTxsEvent(ch chan<- NewRTxsEvent) event.Subscription {
-	return bc.scope.Track(bc.rtxFeed.Subscribe(ch))
-}
-
-func (bc *BlockChain) RtxsFeedSend(transaction NewRTxsEvent) int {
-	return bc.rtxFeed.Send(transaction)
-}
-
-func (bc *BlockChain) SubscribeNewStampEvent(ch chan<- NewTakerStampEvent) event.Subscription {
-	return bc.scope.Track(bc.takerStampFeed.Subscribe(ch))
-}
-
-func (bc *BlockChain) SubscribeNewRTxssEvent(ch chan<- NewRTxsEvent) event.Subscription {
-	return bc.scope.Track(bc.rtxsFeed.Subscribe(ch))
-}
-
-func (bc *BlockChain) TransactionFinishFeedSend(tx TransationFinishEvent) int {
-	return bc.FinishsFeed.Send(tx)
-}
-
-func (bc *BlockChain) SubscribeNewFinishsEvent(ch chan<- TransationFinishEvent) event.Subscription {
-	return bc.scope.Track(bc.FinishsFeed.Subscribe(ch))
-}
-
-func (bc *BlockChain) IsCtxAddress(addr common.Address) bool {
-	return addr == bc.CrossDemoAddress
-}
-
 func (bc *BlockChain) GetBlockNumber(hash common.Hash) *uint64 {
 	return bc.hc.GetBlockNumber(hash)
 }
+
+func (bc *BlockChain) GetChainConfig() *params.ChainConfig {
+	return bc.chainConfig
+}
+
+func (bc *BlockChain) GetCrossTrigger() *cc.CrossTrigger { return bc.crossTrigger }

@@ -742,6 +742,7 @@ type CallArgs struct {
 	GasPrice *hexutil.Big    `json:"gasPrice"`
 	Value    *hexutil.Big    `json:"value"`
 	Data     *hexutil.Bytes  `json:"data"`
+	Nonce    *hexutil.Uint64 `json:"nonce"`
 }
 
 // account indicates the overriding fields of account during the execution of
@@ -827,9 +828,13 @@ func DoCall(ctx context.Context, b Backend, args CallArgs, blockNrOrHash rpc.Blo
 	if args.Data != nil {
 		data = []byte(*args.Data)
 	}
+	var nonce uint64
+	if args.Nonce != nil {
+		nonce = uint64(*args.Nonce)
+	}
 
 	// Create new call message
-	msg := types.NewMessage(addr, args.To, 0, value, gas, gasPrice, data, false)
+	msg := types.NewMessage(addr, args.To, nonce, value, gas, gasPrice, data, false)
 
 	// Setup context so it may be cancelled the call has completed
 	// or, in case of unmetered gas, setup a context with a timeout.
@@ -1795,150 +1800,4 @@ func (s *PublicNetAPI) PeerCount() hexutil.Uint {
 // Version returns the current ethereum protocol version.
 func (s *PublicNetAPI) Version() string {
 	return fmt.Sprintf("%d", s.networkVersion)
-}
-
-// PublicTxPoolAPI offers and API for the transaction pool. It only operates on data that is non confidential.
-type PublicCtxPoolAPI struct {
-	b Backend
-}
-
-// NewPublicTxPoolAPI creates a new tx pool service that gives information about the transaction pool.
-func NewPublicCtxPoolAPI(b Backend) *PublicCtxPoolAPI {
-	return &PublicCtxPoolAPI{b}
-}
-
-func (s *PublicCtxPoolAPI) CtxContent() map[string]map[uint64][]*RPCCrossTransaction {
-	content := map[string]map[uint64][]*RPCCrossTransaction{
-		"remote": make(map[uint64][]*RPCCrossTransaction),
-		"local":  make(map[uint64][]*RPCCrossTransaction),
-	}
-	remotes, locals := s.b.CtxPoolContent()
-	for k, txs := range remotes {
-		for _, tx := range txs {
-			content["remote"][k] = append(content["remote"][k], newRPCCrossTransaction(tx))
-		}
-	}
-	for s, txs := range locals {
-		for _, tx := range txs {
-			content["local"][s] = append(content["local"][s], newRPCCrossTransaction(tx))
-		}
-	}
-	return content
-}
-
-func (s *PublicCtxPoolAPI) GetRemoteCtx(count uint64) map[uint64][]*RPCCrossTransaction {
-	content := make(map[uint64][]*RPCCrossTransaction)
-
-	remotes, _ := s.b.CtxPoolContent()
-	for k, txs := range remotes {
-		ctxCount := uint64(0)
-		for _, tx := range txs {
-			if ctxCount < count {
-				content[k] = append(content[k], newRPCCrossTransaction(tx))
-				ctxCount++
-			}
-		}
-	}
-
-	return content
-}
-func (s *PublicCtxPoolAPI) GetLocalCtx(count uint64) map[uint64][]*RPCCrossTransaction {
-	content := make(map[uint64][]*RPCCrossTransaction)
-
-	_, locals := s.b.CtxPoolContent()
-	for k, txs := range locals {
-		ctxCount := uint64(0)
-		for _, tx := range txs {
-			if ctxCount < count {
-				content[k] = append(content[k], newRPCCrossTransaction(tx))
-				ctxCount++
-			}
-		}
-	}
-
-	return content
-}
-
-func (s *PublicCtxPoolAPI) CtxStats() int {
-	return s.b.CtxStats()
-}
-
-func (s *PublicCtxPoolAPI) CtxQuery(ctx context.Context, hash common.Hash) *RPCCrossTransaction {
-	remotes, locals := s.b.CtxPoolContent()
-	for _, txs := range remotes {
-		for _, tx := range txs {
-			if tx.Data.TxHash == hash {
-				return newRPCCrossTransaction(tx)
-			}
-		}
-	}
-	for _, txs := range locals {
-		for _, tx := range txs {
-			if tx.Data.TxHash == hash {
-				return newRPCCrossTransaction(tx)
-			}
-		}
-	}
-	return nil
-}
-
-// RPCTransaction represents a transaction that will serialize to the RPC representation of a transaction
-type RPCCrossTransaction struct {
-	Value            *hexutil.Big   `json:"value"`
-	CTxId            common.Hash    `json:"ctxId"`
-	TxHash           common.Hash    `json:"txHash"`
-	From             common.Address `json:"from"`
-	BlockHash        common.Hash    `json:"blockHash"`
-	DestinationId    *hexutil.Big   `json:"destinationId"`
-	DestinationValue *hexutil.Big   `json:"destinationValue"`
-	Input            hexutil.Bytes  `json:"input"`
-	V                []*hexutil.Big `json:"v"`
-	R                []*hexutil.Big `json:"r"`
-	S                []*hexutil.Big `json:"s"`
-}
-
-// newRPCTransaction returns a transaction that will serialize to the RPC
-// representation, with the given location metadata set (if available).
-func newRPCCrossTransaction(tx *types.CrossTransactionWithSignatures) *RPCCrossTransaction {
-	result := &RPCCrossTransaction{
-		Value:            (*hexutil.Big)(tx.Data.Value),
-		CTxId:            tx.Data.CTxId,
-		TxHash:           tx.Data.TxHash,
-		From:             tx.Data.From,
-		BlockHash:        tx.Data.BlockHash,
-		DestinationId:    (*hexutil.Big)(tx.Data.DestinationId),
-		DestinationValue: (*hexutil.Big)(tx.Data.DestinationValue),
-		Input:            tx.Data.Input,
-	}
-	for _, v := range tx.Data.V {
-		result.V = append(result.V, (*hexutil.Big)(v))
-	}
-	for _, r := range tx.Data.R {
-		result.R = append(result.R, (*hexutil.Big)(r))
-	}
-	for _, s := range tx.Data.S {
-		result.S = append(result.S, (*hexutil.Big)(s))
-	}
-
-	return result
-}
-
-func (s *PublicCtxPoolAPI) CtxOwner(ctx context.Context, from common.Address) map[string]map[uint64][]*RPCCrossTransaction {
-	remotes, locals := s.b.GetSelfCtx(from)
-	content := map[string]map[uint64][]*RPCCrossTransaction{
-		"remote": make(map[uint64][]*RPCCrossTransaction),
-		"local":  make(map[uint64][]*RPCCrossTransaction),
-	}
-	for k, txs := range remotes {
-		for _, tx := range txs {
-			content["remote"][k] = append(content["remote"][k], newRPCCrossTransaction(tx))
-		}
-
-	}
-	for s, txs := range locals {
-		for _, tx := range txs {
-			content["local"][s] = append(content["local"][s], newRPCCrossTransaction(tx))
-		}
-	}
-	return content
 }

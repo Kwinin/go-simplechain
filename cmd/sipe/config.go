@@ -23,7 +23,6 @@ import (
 	"math/big"
 	"os"
 	"reflect"
-	"strings"
 	"unicode"
 
 	"github.com/naoina/toml"
@@ -154,23 +153,6 @@ func makeConfigNode(ctx *cli.Context) (*node.Node, gethConfig) {
 			cfg.Eth.SubChainCtxAddress = address
 		}
 	}
-	if ctx.GlobalIsSet(utils.AnchorAccountsFlag.Name) {
-		anchors := strings.Split(ctx.GlobalString(utils.AnchorAccountsFlag.Name), ",")
-		if len(anchors) > 0 {
-			addresses := make([]common.Address, 0, len(anchors))
-			for _, anchor := range anchors {
-				if common.IsHexAddress(anchor) {
-					addresses = append(addresses, common.HexToAddress(anchor))
-				}
-			}
-			cfg.Eth.CtxStore.Anchors = addresses
-			cfg.Eth.RtxStore.Anchors = addresses
-		}
-	}
-
-	//if ctx.GlobalIsSet(utils.AnchorPriKeyFlag.Name) {
-	//	rpctx.PrivateKey = ctx.GlobalString(utils.AnchorPriKeyFlag.Name)
-	//}
 
 	return stack, cfg
 }
@@ -194,9 +176,9 @@ func makeFullNode(ctx *cli.Context) *node.Node {
 
 	cfg.Eth.Role = role
 
-	subChan := utils.RegisterEthService(stack, &cfg.Eth)
+	raftChan := utils.RegisterEthService(stack, &cfg.Eth)
 	if ctx.GlobalBool(utils.RaftModeFlag.Name) {
-		RegisterRaftService(stack, ctx, cfg, subChan)
+		RegisterRaftService(stack, ctx, cfg, raftChan)
 	}
 
 	// Whisper must be explicitly enabled by specifying at least 1 whisper flag or in dev mode
@@ -265,7 +247,7 @@ func RegisterRaftService(stack *node.Node, ctx *cli.Context, cfg gethConfig, sub
 		}
 
 		ethereum := <-subChan
-		return raftBackend.New(ctx, myId, raftPort, joinExisting, ethereum, peers, datadir, ethereum.GetCtxStore())
+		return raftBackend.New(ctx, myId, raftPort, joinExisting, ethereum, peers, datadir)
 	}); err != nil {
 		utils.Fatalf("Failed to register the Raft service: %v", err)
 	}

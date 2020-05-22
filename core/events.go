@@ -55,52 +55,36 @@ type ChainHeadEvent struct {
 	Block *types.Block
 }
 
-type NewCTxsEvent struct {
-	Txs []*types.CrossTransaction
-}
-
-type NewCTxEvent struct {
-	Txs *types.CrossTransaction
-}
-
-type NewRTxEvent struct {
-	Txs *types.ReceptTransaction
-}
-
-type NewRTxsEvent struct {
-	Txs []*types.ReceptTransaction
-}
-type NewRTxsRemoveEvent struct {
-	Txs []*types.RTxsInfo
-}
-
-type NewTakerStampEvent struct {
-	Txs []*types.RTxsInfo
-}
-
-type NewCWssEvent struct {
-	Txs []*types.CrossTransactionWithSignatures
-}
-
-type NewCWsEvent struct {
-	Txs *types.CrossTransactionWithSignatures
-}
-
-type NewRWsEvent struct {
-	Tws *types.ReceptTransactionWithSignatures
-}
-
-type NewRWssEvent struct {
-	Tws []*types.ReceptTransactionWithSignatures
-}
-
-type TransationRemoveEvent struct {
-	Transactions types.Transactions
-}
-type TransationFinishEvent struct {
-	Finish []*types.FinishInfo
-}
-
-type NewCtxStatusEvent struct {
-	Status map[uint64]*Statistics
-}
+//type ConfirmedMakerEvent struct {
+//	Txs []*types.CrossTransaction
+//}
+//
+//type NewTakerEvent struct {
+//	Txs []*types.ReceptTransaction
+//}
+//
+//type ConfirmedTakerEvent struct {
+//	Txs []*types.ReceptTransaction
+//}
+//
+//type SignedCtxEvent struct {
+//	Tws      *types.CrossTransactionWithSignatures
+//	CallBack func(cws *types.CrossTransactionWithSignatures, invalidSigIndex ...int)
+//}
+//
+//type NewFinishEvent struct {
+//	ChainID   *big.Int
+//	FinishIds []common.Hash
+//}
+//
+//type ConfirmedFinishEvent struct {
+//	FinishIds []common.Hash
+//}
+//
+//type AnchorEvent struct {
+//	ChainInfo []*types.RemoteChainInfo
+//}
+//
+//type NewCrossChainEvent struct {
+//	ChainID *big.Int
+//}

@@ -28,6 +28,7 @@ import (
 	"github.com/simplechain-org/go-simplechain/consensus/ethash"
 	"github.com/simplechain-org/go-simplechain/consensus/istanbul"
 	"github.com/simplechain-org/go-simplechain/core"
+	"github.com/simplechain-org/go-simplechain/cross"
 	"github.com/simplechain-org/go-simplechain/eth/downloader"
 	"github.com/simplechain-org/go-simplechain/eth/gasprice"
 	"github.com/simplechain-org/go-simplechain/miner"
@@ -62,8 +63,7 @@ var DefaultConfig = Config{
 		Blocks:     20,
 		Percentile: 60,
 	},
-	CtxStore: core.DefaultCtxStoreConfig,
-	RtxStore: core.DefaultRtxStoreConfig,
+	CtxStore: cross.DefaultCtxStoreConfig,
 	Role:     common.RoleMainChain,
 	Istanbul: *istanbul.DefaultConfig,
 }
@@ -168,9 +168,7 @@ type Config struct {
 
 	Role common.ChainRole
 
-	CtxStore core.CtxStoreConfig
-
-	RtxStore core.RtxStoreConfig
+	CtxStore cross.CtxStoreConfig
 
 	MainChainCtxAddress common.Address
 
